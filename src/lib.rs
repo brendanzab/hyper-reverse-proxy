@@ -22,6 +22,12 @@
 //! futures = "0.1"
 //! ```
 //!
+//! To enable support for connecting to downstream HTTPS servers, enable the `https` feature:
+//!
+//! ```toml
+//! hyper-reverse-proxy = { version = "0.4", features = ["https"] }
+//! ```
+//!
 //! The following example will set up a reverse proxy listening on `127.0.0.1:13900`,
 //! and will proxy these calls:
 //!
@@ -86,12 +92,14 @@
 use hyper::Body;
 use std::net::IpAddr;
 use std::str::FromStr;
+use hyper::client::connect::dns::GaiResolver;
+use hyper::client::HttpConnector;
 use hyper::header::{HeaderMap, HeaderValue};
 use hyper::{Request, Response, Client, Uri, StatusCode};
 use futures::future::{self, Future};
 use lazy_static::lazy_static;
 
-type BoxFut = Box<Future<Item=Response<Body>, Error=hyper::Error> + Send>;
+type BoxFut = Box<dyn Future<Item=Response<Body>, Error=hyper::Error> + Send>;
 
 fn is_hop_header(name: &str) -> bool {
     use unicase::Ascii;
@@ -172,11 +180,23 @@ fn create_proxied_request<B>(client_ip: IpAddr, forward_url: &str, mut request: 
     request
 }
 
+#[cfg(feature = "https")]
+fn build_client() -> Client<hyper_tls::HttpsConnector<HttpConnector<GaiResolver>>, hyper::Body> {
+    // 4 is number of blocking DNS threads
+    let https = hyper_tls::HttpsConnector::new(1).unwrap();
+	Client::builder().build::<_, hyper::Body>(https)
+}
+
+#[cfg(not(feature = "https"))]
+fn build_client() -> Client<HttpConnector<GaiResolver>, hyper::Body> {
+    Client::new()
+}
+
 pub fn call(client_ip: IpAddr, forward_uri: &str, request: Request<Body>) -> BoxFut {
 
 	let proxied_request = create_proxied_request(client_ip, forward_uri, request);
 
-	let client = Client::new();
+    let client = build_client();
 	let response = client.request(proxied_request).then(|response| {
 
 		let proxied_response = match response {
